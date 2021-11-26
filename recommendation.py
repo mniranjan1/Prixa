@@ -18,6 +18,7 @@ templates = Jinja2Templates(directory=str(BASE_PATH / "htmldirectory"))
 model = tp.LDAModel.load('recommendation.bin')
 # Routes
 train_df = pd.read_pickle('keywords(total_final_30)(latest).pkl')
+train_df = train_df.drop_duplicates(subset=['url', 'user'], keep="last")
 embeddings = np.zeros((len(train_df['keywords']), model.k))
 for i, doc in enumerate(model.docs):
     embeddings[i, :] = doc.get_topic_dist()
@@ -48,23 +49,35 @@ async def fast_cosine_gufunc(u, v, result):
     result[:] = ratio
 
 
+def split(a, n):
+    k, m = divmod(len(a), n)
+    return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
+
+
 SIMILARITY_METRIC = {
     "fast_cosine_gufunc": fast_cosine_gufunc
 }
 
 
 class Recommender():
-    def __init__(self, data, embeddings, user_id, num_recommendations=5, metric="fast_cosine_gufunc"):
+    def __init__(self, data, embeddings, user_id, url_id, num_recommendations=2, metric="fast_cosine_gufunc"):
         self._data = data
         self._user_id = user_id
+        self.url_id = url_id
         self._embeddings = embeddings
+        self.metric = SIMILARITY_METRIC[metric]
         self._num_recommendations = num_recommendations
 
         self.user_history = self.get_user_history()
-
-        self.last_url = self.user_history["url"].values[0][-1]
-
-        self.last_url_embed = embeddings[embeddings.index == self.last_url]
+        self.last_url = self.user_history["url"].values
+        self.last_url[0].append(url_id)
+        countero = len(self.last_url[0])
+        self.stack = []
+        for i in range(countero):
+            globals()["last_url_embed" + str(i)
+                      ] = embeddings[embeddings.index == self.last_url[0][i]]
+            self.stack.append(globals()["last_url_embed" + str(i)])
+        self.final_df = pd.concat(self.stack, axis=0)
 
     def get_user_history(self):
         all_user_history = self._data.groupby(
@@ -74,15 +87,23 @@ class Recommender():
     def get_similarities(self):
         sims = []
         for target_embed in self._embeddings:
-            sims.append(fast_cosine_gufunc(
-                self.last_url_embed.values[0], target_embed))
+            for i, j in enumerate(self.final_df.index.unique()):
+                z = self.final_df.iloc[self.final_df.index == j].values[0]
+                globals()["sims" + str(i)
+                          ] = fast_cosine_gufunc(z, target_embed)
+                sims.append(globals()["sims" + str(i)])
         return sims
 
     def get_recommendations(self):
         sims = self.get_similarities()
-        recommendation_ids = list(
-            self._embeddings.iloc[np.argsort(sims)][-self._num_recommendations:].index)
-        return self.last_url, recommendation_ids
+        sims = list(split(sims, len(self.stack)))
+        recommendation_ids_stack = []
+        for i in sims:
+            globals()["recommendation_ids" + str(i)] = list(
+                self._embeddings.iloc[np.argsort(i)][-self._num_recommendations:].index)
+            recommendation_ids_stack.append(
+                globals()["recommendation_ids" + str(i)])
+        return self.last_url, recommendation_ids_stack
 
 
 @app.get("/predict/")
@@ -91,16 +112,16 @@ async def index(request: Request):
 
 
 @app.post("/predict/")
-async def fetch_predict(request: Request, user: int = Form(...)):
+async def fetch_predict(request: Request, user: int = Form(...), url_id: int = Form(...)):
     recommender = Recommender(
-        train_df, embeddings_series, user, num_recommendations=4, metric="fast_cosine_gufunc")
-    x, recommendation_ids = recommender.get_recommendations()
-    past_urls = recommender.user_history["url"].values
+        train_df, embeddings_series, user, url_id, num_recommendations=2, metric="fast_cosine_gufunc")
+    x, recommendation_id = recommender.get_recommendations()
+    past_urls = recommender.last_url[0]
     urls = []
-    for i in recommendation_ids:
-        label_uni = train_df.loc[train_df['url'] == i].label.unique()
-        urls.append(label_uni.tolist())
-    return templates.TemplateResponse("abc.html", context={"request": request, "recommendation_ids": urls, "past_urls": past_urls.tolist()})
+    # for i in recommendation_id:
+    #     label_uni = train_df.loc[train_df['url'] == i].label.unique()
+    #     urls.append(label_uni.tolist())
+    return templates.TemplateResponse("abc.html", {"request": request, "recommendation_ids": recommendation_id, "past_urls": past_urls})
 
 
 if __name__ == '__main__':

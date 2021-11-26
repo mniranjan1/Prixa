@@ -3,7 +3,15 @@
     <title>Item Details</title>
   </head>
   <body>
-    <h1>output is</h1>
-    {{recommendation_ids}} {{past_urls}}
+    <br />
+    <h1>Recommendation IDs</h1>
+    {% for recom1,recom2 in recommendation_ids %}
+    <div>{{recom1}}</div>
+    <div>{{recom2}}</div>
+    {% endfor %}<br />
+    <h2>Past URLS</h2>
+    {% for past in past_urls %}
+    <div>{{past}}</div>
+    {% endfor %}
   </body>
 </html>
